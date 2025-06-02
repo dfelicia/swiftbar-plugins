@@ -36,6 +36,8 @@ readonly ARROW_DOWN="▽"
 readonly API_SYMBOL_RAW="$(basename "$0" .sh)"
 readonly API_SYMBOL="${API_SYMBOL_RAW^^}"
 readonly CURL_TIMEOUT=10
+readonly CACHE_DIR="${HOME}/Library/Caches/com.ameba.SwiftBar/Plugins"
+readonly CACHE_FILE="${CACHE_DIR}/${API_SYMBOL}.last"
 
 IFS=$'\n\t'
 
@@ -46,6 +48,12 @@ IFS=$'\n\t'
 ## -----------------------------------------------------------------------------
 # check_dependencies()
 check_dependencies() {
+    # Ensure Bash version is 4.0 or newer
+    if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 )); then
+        echo "Error: Bash 4.0 or newer is required." >&2
+        exit 1
+    fi
+
     local dep
     for dep in jq curl; do
         if ! command -v "$dep" >/dev/null 2>&1; then
@@ -61,13 +69,12 @@ check_dependencies() {
 ##   Arguments:
 ##     $1 - message text
 ##     $2 - text color (default: gray)
-##     $3 - exit code (default: 1)
 ## -----------------------------------------------------------------------------
-# error_output(msg, [color], [exit_code])
+# error_output(msg, [color])
 error_output() {
-    local msg=$1 color=${2:-gray} exit_code=${3:-1}
+    local msg=$1 color=${2:-gray}
     echo "${API_SYMBOL} ${msg} | color=${color} font=${FONT} size=${FONTSIZE}"
-    return "$exit_code"
+    return 0
 }
 
 ## -----------------------------------------------------------------------------
@@ -199,10 +206,6 @@ format_output() {
 main() {
   check_dependencies
 
-  # Cache location for after-hours fallback
-  CACHE_DIR="${HOME}/.cache/swiftbar-stock"
-  CACHE_FILE="${CACHE_DIR}/${API_SYMBOL}.last"
-
   if is_market_hours; then
     # Market is open: attempt to fetch live data via Twelve Data
     local source_price source_prev change pct color arrow
@@ -215,8 +218,7 @@ main() {
           source_price="${nasdaq_price}"
           source_prev="${nasdaq_prev_close}"
         else
-          error_output "N/A" gray 1
-          return 1
+          error_output "No data available" gray 0
         fi
       elif (( http_code == 401 || http_code == 429 )); then
         # Rate‐limit or unauthorized; fallback to Nasdaq
@@ -225,7 +227,6 @@ main() {
           source_prev="${nasdaq_prev_close}"
         else
           error_output "Rate or plan limit" red 0
-          return 0
         fi
       elif (( http_code != 200 )); then
         # Other HTTP error; fallback to Nasdaq
@@ -233,8 +234,7 @@ main() {
           source_price="${nasdaq_price}"
           source_prev="${nasdaq_prev_close}"
         else
-          error_output "HTTP ${http_code}" red 1
-          return 1
+          error_output "HTTP ${http_code}" red 0
         fi
       else
         # HTTP 200: check JSON‐level error
@@ -246,8 +246,7 @@ main() {
             source_price="${nasdaq_price}"
             source_prev="${nasdaq_prev_close}"
           else
-            error_output "${err_msg}" red 1
-            return 1
+            error_output "${err_msg}" red 0
           fi
         else
           # Successful JSON from Twelve Data: parse fields
@@ -255,15 +254,14 @@ main() {
           source_prev=$(jq -r '.previous_close // 0' <<<"${json_body}")
         fi
       fi
-    else
-      # Twelve Data fetch failed entirely; fallback to Nasdaq
-      if get_nasdaq_quote; then
-        source_price="${nasdaq_price}"
-        source_prev="${nasdaq_prev_close}"
       else
-        error_output "N/A" gray 1
-        return 1
-      fi
+        # Twelve Data fetch failed entirely; fallback to Nasdaq
+        if get_nasdaq_quote; then
+          source_price="${nasdaq_price}"
+          source_prev="${nasdaq_prev_close}"
+        else
+          error_output "No data available" gray 0
+        fi
     fi
 
     # Cache the chosen source's price and prev_close for after hours
@@ -290,29 +288,58 @@ main() {
     return 0
   fi
 
-  # Market is closed: try to use cached values
+  # Market is closed: try to use cached values (or fetch if missing)
   if [[ -f "${CACHE_FILE}" ]]; then
     readarray -t cached < "${CACHE_FILE}"
     cached_price="${cached[0]}"
     cached_prev="${cached[1]}"
-    if [[ -n "${cached_price}" && -n "${cached_prev}" ]]; then
-      change=$(awk "BEGIN { printf \"%.2f\", ${cached_price} - ${cached_prev} }")
-      pct=$(awk "BEGIN { printf \"%.2f\", 100 * (${cached_price} - ${cached_prev}) / ${cached_prev} }")
-      if [[ "${change:0:1}" == "-" ]]; then
-        arrow="${ARROW_DOWN}"
-        color="red"
+  else
+    # No cache: fetch closing values regardless of market state
+    local fallback_price fallback_prev
+    if get_twelvedata_quote; then
+      if (( http_code == 200 )) && ! jq -e '.status == "error"' <<<"${json_body}" >/dev/null; then
+        fallback_price=$(jq -r '.close // 0' <<<"${json_body}")
+        fallback_prev=$(jq -r '.previous_close // 0' <<<"${json_body}")
       else
-        arrow="${ARROW_UP}"
-        color="green"
+        # Twelve Data error or non-200: try Nasdaq
+        if get_nasdaq_quote; then
+          fallback_price="${nasdaq_price}"
+          fallback_prev="${nasdaq_prev_close}"
+        fi
       fi
-      format_output "${cached_price}" "${change}" "${pct}" "${color}" "${arrow}"
-      return 0
+    else
+      # Could not reach Twelve Data: try Nasdaq
+      if get_nasdaq_quote; then
+        fallback_price="${nasdaq_price}"
+        fallback_prev="${nasdaq_prev_close}"
+      fi
+    fi
+    # If we got both values, cache them
+    if [[ -n "${fallback_price}" && -n "${fallback_prev}" ]]; then
+      mkdir -p "${CACHE_DIR}"
+      printf "%.2f\n%.2f\n" "${fallback_price}" "${fallback_prev}" > "${CACHE_FILE}"
+      cached_price="${fallback_price}"
+      cached_prev="${fallback_prev}"
     fi
   fi
 
-  # Ultimate fallback
-  error_output "N/A" gray 1
-  return 1
+  # If we now have cached_price and cached_prev, display them
+  if [[ -n "${cached_price}" && -n "${cached_prev}" ]]; then
+    change=$(awk "BEGIN { printf \"%.2f\", ${cached_price} - ${cached_prev} }")
+    pct=$(awk "BEGIN { printf \"%.2f\", 100 * (${cached_price} - ${cached_prev}) / ${cached_prev} }")
+    if [[ "${change:0:1}" == "-" ]]; then
+      arrow="${ARROW_DOWN}"
+      color="red"
+    else
+      arrow="${ARROW_UP}"
+      color="green"
+    fi
+    format_output "${cached_price}" "${change}" "${pct}" "${color}" "${arrow}"
+    return 0
+  fi
+
+  # If everything failed, show N/A but exit 0 to avoid SwiftBar error icon
+  error_output "N/A" gray 0
 }
 
 if (($# == 0)); then

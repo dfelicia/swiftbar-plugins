@@ -21,6 +21,10 @@ For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL)
   ```bash
   brew install jq
   ```
+- **Bash 5.0 or newer** (the script uses `readarray` and other features not available in Apple’s Bash 3.2). Install via Homebrew:
+  ```bash
+  brew install bash
+  ```
 - **A free [Twelve Data API key](https://twelvedata.com/)**
   Sign up at [twelvedata.com](https://twelvedata.com/) to get your API key.
 
