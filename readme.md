@@ -1,6 +1,9 @@
 # SwiftBar Stock Price Plugin (Twelve Data)
 
 This SwiftBar plugin displays the stock price, change, and percent change for any symbol using the [Twelve Data API](https://twelvedata.com/).
+
+This version attempts to fetch price data from Twelve Data first; on any API error (HTTP error, JSON error, or rate-limit), it falls back to Nasdaq’s quote API. It also caches the last close and previous close values to display accurate change/percent when the market is closed.
+
 **The symbol is determined by the script filename:**
 For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL), etc.
 
@@ -68,17 +71,22 @@ Adjust these settings as needed for your proxy configuration.
 
    SwiftBar will automatically pick up the new script and display the price for the symbol in the filename.
 
-4. **Live Fetch Only**
+4. **Ensure Caching Works**
 
-   This version of the plugin fetches the latest price from the API on every run. Caching has been removed, so the displayed value is always live. If the API call fails or returns an error, the plugin will show “N/A” or an appropriate error indicator.
+   The plugin will create cache files under `~/Library/Caches/` named `<SYMBOL>_cache.txt`. You don’t need to manage these manually; they’re used automatically after market hours.
 
-   **Closed Market Styling:** When the market is closed, the plugin displays the price and arrow in gray. The arrow (△ or ▽) still reflects whether the current price is above or below the previous close.
+5. **Fallback & Caching**
 
+   - The plugin will first try to fetch live data from the Twelve Data API.
+   - If Twelve Data is down, returns an error, or hits a rate limit, it will fetch from Nasdaq’s quote API as a fallback.
+   - After a successful fetch (from either source), the last close and previous close are cached to `~/Library/Caches/<SYMBOL>_cache.txt`.
+   - When the market is closed, the plugin reads from this cache to compute and display price change and percentage.
 
 ---
 
-**Note:**
-- No need to edit the script to change the symbol—just rename the file!
+**Nasdaq Fallback:** If the Twelve Data API call fails (e.g. HTTP ≥500, 401/429, or JSON‐level error), the plugin uses Nasdaq’s public API (`https://api.nasdaq.com/api/quote/<SYMBOL>/info?assetclass=stocks`) to retrieve the last sale price and previous close.
+
+---
 
 # SSH Dropdown Menu for iTerm (ssh.sh)
 
