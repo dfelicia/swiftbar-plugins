@@ -2,7 +2,7 @@
 
 This SwiftBar plugin displays the stock price, change, and percent change for any symbol using the [Twelve Data API](https://twelvedata.com/).
 
-This version attempts to fetch price data from Twelve Data first; on any API error (HTTP error, JSON error, or rate-limit), it falls back to Nasdaq’s quote API. It also caches the last close and previous close values to display accurate change/percent when the market is closed.
+This version uses the Twelve Data API as the primary source because Nasdaq’s public API is meant for manual/browser access and may block frequent automated curl requests. On any Twelve Data failure (HTTP error, JSON error, or rate-limit) it falls back to Nasdaq’s quote API. It also caches the last close and previous close values to display $change/percent when the market is closed.
 
 **The symbol is determined by the script filename:**
 For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL), etc.
