@@ -2,7 +2,7 @@
 
 This SwiftBar plugin displays the stock price, change, and percent change for any symbol using the [Twelve Data API](https://twelvedata.com/).
 
-This version uses the Twelve Data API as the primary source because Nasdaq’s public API is meant for manual/browser access and may block frequent automated curl requests. On any Twelve Data failure (HTTP error, JSON error, or rate-limit) it falls back to Nasdaq’s quote API. It also caches the last close and previous close values to display $change/percent when the market is closed.
+This version uses the Twelve Data API as the primary source because Nasdaq’s public API is meant for manual/browser access and may block frequent automated curl requests. On any Twelve Data failure (HTTP error, JSON error, or rate-limit) it falls back to Nasdaq’s quote API. It also caches the last close and previous close values to display $/% change when the market is closed.
 
 **The symbol is determined by the script filename:**
 For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL), etc.
@@ -21,7 +21,7 @@ For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL)
   ```bash
   brew install jq
   ```
-- **Bash 5.0 or newer** (the script uses `readarray` and other features not available in Apple’s Bash 3.2). Install via Homebrew:
+- **Bash 5.0 or newer** (the script uses `readarray`, named references, and other features not available in Apple’s Bash 3.2). Install via Homebrew:
   ```bash
   brew install bash
   ```
@@ -77,13 +77,13 @@ Adjust these settings as needed for your proxy configuration.
 
 4. **Ensure Caching Works**
 
-   The plugin will create cache files under `~/Library/Caches/` named `<SYMBOL>_cache.txt`. You don’t need to manage these manually; they’re used automatically after market hours.
+   The plugin will create a cache in `~/Library/Caches/com.ameba.SwiftBar/Plugins/` named `<SYMBOL>.last`. You don’t need to manage this manually; it is used automatically after market hours to prevent superfluous API calls.
 
 5. **Fallback & Caching**
 
    - The plugin will first try to fetch live data from the Twelve Data API.
    - If Twelve Data is down, returns an error, or hits a rate limit, it will fetch from Nasdaq’s quote API as a fallback.
-   - After a successful fetch (from either source), the last close and previous close are cached to `~/Library/Caches/<SYMBOL>_cache.txt`.
+   - After a successful fetch (from either source), the last close and previous close are cached to `~/Library/Caches/com.ameba.SwiftBar/Plugins/<SYMBOL>.last`.
    - When the market is closed, the plugin reads from this cache to compute and display price change and percentage.
 
 ---
