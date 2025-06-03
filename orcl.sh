@@ -50,6 +50,8 @@ readonly CACHE_FILE="${CACHE_DIR}/${API_SYMBOL}.last"
 ##
 ## (All other variables are declared local within their functions.)
 ################################################################################
+declare -g fetched_price
+declare -g fetched_prev
 
 IFS=$'\n\t'
 
@@ -60,9 +62,9 @@ IFS=$'\n\t'
 ## -----------------------------------------------------------------------------
 # check_dependencies()
 check_dependencies() {
-    # Ensure Bash version is 4.0 or newer
+    # Ensure Bash version is 4.3 or newer
     if [[ -z "${BASH_VERSINFO:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
-        echo "Error: Bash 4.0 or newer is required." >&2
+        echo "Error: Bash 4.3 or newer is required." >&2
         exit 1
     fi
 

@@ -21,7 +21,7 @@ For example, `aapl.sh` will show Apple (AAPL), `orcl.sh` will show Oracle (ORCL)
   ```bash
   brew install jq
   ```
-- **Bash 5.0 or newer** (the script uses `readarray`, named references, and other features not available in Apple’s Bash 3.2). Install via Homebrew:
+- **Bash 4.3 or newer** (the script uses `readarray`, named references, and other features not available in Apple’s Bash 3.2). Install via Homebrew:
   ```bash
   brew install bash
   ```
