@@ -155,13 +155,15 @@ get_twelvedata_quote() {
 # -----------------------------------------------------------------------------
 # get_nasdaq_quote()
 get_nasdaq_quote() {
-    local url tmp_file nasdaq_response close_raw netchange_raw
+    local url tmp_file nasdaq_response
+    local sec_close_raw sec_netchange_raw close_raw netchange_raw
+    local close_num netchange_num
 
     url="https://api.nasdaq.com/api/quote/${API_SYMBOL}/info?assetclass=stocks"
     tmp_file=$(mktemp) || return 1
     trap 'rm -f "${tmp_file}"' RETURN
 
-    # Use a browser-like User-Agent so Nasdaq doesn’t block the request, force HTTP/1.1, and add extra headers to avoid INTERNAL_ERROR
+    # Use a browser-like User-Agent so Nasdaq doesn’t block the request, force HTTP/1.1
     if ! nasdaq_response=$(curl -sS --http1.1 \
         -H "Accept: application/json" \
         -H "User-Agent: Mozilla/5.0" \
@@ -171,30 +173,39 @@ get_nasdaq_quote() {
         return 1
     fi
 
-    # Parse "lastSalePrice" (e.g. "$168.87") and "netChange" (e.g. "+2.26")
-    close_raw=$(jq -r '.data.primaryData.lastSalePrice' <<<"$nasdaq_response")
-    # If lastSalePrice is "null" or missing, bail out
-    if [[ "${close_raw}" == "null" || -z "${close_raw}" ]]; then
+    # Prefer secondaryData for official 4:00 PM close
+    sec_close_raw=$(jq -r '.data.secondaryData.lastSalePrice' <<<"${nasdaq_response}")
+    sec_netchange_raw=$(jq -r '.data.secondaryData.netChange' <<<"${nasdaq_response}")
+
+    if [[ "${sec_close_raw}" != "null" && -n "${sec_close_raw}" && \
+          "${sec_netchange_raw}" != "null" && -n "${sec_netchange_raw}" ]]; then
+        close_raw="${sec_close_raw}"
+        netchange_raw="${sec_netchange_raw}"
+    else
+        # Fallback to primaryData if secondaryData unavailable
+        close_raw=$(jq -r '.data.primaryData.lastSalePrice' <<<"${nasdaq_response}")
+        netchange_raw=$(jq -r '.data.primaryData.netChange' <<<"${nasdaq_response}")
+    fi
+
+    # If close or netChange is missing/null, bail out
+    if [[ "${close_raw}" == "null" || -z "${close_raw}" || \
+          "${netchange_raw}" == "null" || -z "${netchange_raw}" ]]; then
         return 1
     fi
-    netchange_raw=$(jq -r '.data.primaryData.netChange' <<<"$nasdaq_response")
 
-    # If netChange is "null" or missing, bail out
-    if [[ "${netchange_raw}" == "null" || -z "${netchange_raw}" ]]; then
-        return 1
+    # Strip non-numeric characters for arithmetic
+    close_num=${close_raw//[\$,]/}          # remove '$'
+    netchange_num=${netchange_raw//[+\,\-]/} # remove '+', ',', '-'
+
+    # Compute previous close: if netchange was negative, add abs(netchange); else subtract
+    fetched_price=$(printf "%s" "${close_num}")
+    if [[ "${netchange_raw:0:1}" == "-" ]]; then
+        fetched_prev=$(awk "BEGIN { printf \"%.2f\", ${close_num} + ${netchange_num} }")
+    else
+        fetched_prev=$(awk "BEGIN { printf \"%.2f\", ${close_num} - ${netchange_num} }")
     fi
 
-    # Strip non-numeric characters so we can do arithmetic
-    #   e.g. close_num = 168.87   netchange_num = 2.26
-    local close_num netchange_num
-    close_num=${close_raw//[\$,]/}         # remove '$'
-    netchange_num=${netchange_raw//[+\,]/} # remove '+' and any commas
-
-    # Compute previous close = lastSalePrice − netChange
-    fetched_price=$(printf "%s" "$close_num")
-    fetched_prev=$(awk "BEGIN { printf \"%.2f\", $close_num - $netchange_num }")
-
-    # If either parsed number is empty or NaN, fail
+    # If parsing failed, bail out
     if [[ -z "${fetched_price}" || -z "${fetched_prev}" ]]; then
         return 1
     fi
@@ -337,22 +348,64 @@ main() {
         fi
     fi
 
-    # Market is closed: try to use cached values (or fetch if missing)
+    # Market is closed: use cached values if fresh; otherwise, rebuild cache using
+    # Nasdaq’s official closing price (Twelve Data’s “previous_close” can lag behind).
     if [[ -f "${CACHE_FILE}" ]]; then
-        local cached
-        readarray -t cached <"${CACHE_FILE}"
-        cached_price="${cached[0]}"
-        cached_prev="${cached[1]}"
+        # Check if cache is stale: modification time before 16:01 ET today
+        local mod_epoch today_et threshold_epoch
+        mod_epoch=$(stat -f %m "${CACHE_FILE}")
+        today_et=$(TZ="America/New_York" date +'%Y-%m-%d')
+        threshold_epoch=$(TZ="America/New_York" date -j -f "%Y-%m-%d %H:%M" "${today_et} 16:01" +%s)
+        if ((mod_epoch < threshold_epoch)); then
+            # Cache is stale: remove and fetch fresh from Nasdaq for final close
+            rm -f "${CACHE_FILE}"
+            local err_msg
+            if get_nasdaq_quote; then
+                # get_nasdaq_quote sets fetched_price & fetched_prev to Nasdaq’s close/prev
+                [[ -d "${CACHE_DIR}" ]] || mkdir -p "${CACHE_DIR}"
+                printf "%.2f\n%.2f\n" "${fetched_price}" "${fetched_prev}" >"${CACHE_FILE}"
+                cached_price="${fetched_price}"
+                cached_prev="${fetched_prev}"
+            else
+                # If Nasdaq fails, fall back to Twelve Data’s previous_close
+                if get_quote err_msg; then
+                    [[ -d "${CACHE_DIR}" ]] || mkdir -p "${CACHE_DIR}"
+                    printf "%.2f\n%.2f\n" "${fetched_price}" "${fetched_prev}" >"${CACHE_FILE}"
+                    cached_price="${fetched_price}"
+                    cached_prev="${fetched_prev}"
+                else
+                    # Both APIs failed; show error
+                    echo "Error: ${err_msg}" >&2
+                    error_output "${err_msg}"
+                    return 0
+                fi
+            fi
+        else
+            local cached
+            readarray -t cached <"${CACHE_FILE}"
+            cached_price="${cached[0]}"
+            cached_prev="${cached[1]}"
+        fi
     else
-        # No cache: fetch closing values via get_quote
-        local fallback_price fallback_prev err_msg
-        if get_quote err_msg; then
-            fallback_price="${fetched_price}"
-            fallback_prev="${fetched_prev}"
+        local err_msg
+        # No cache at all: fetch final close from Nasdaq because Twelve Data may lag
+        if get_nasdaq_quote; then
             [[ -d "${CACHE_DIR}" ]] || mkdir -p "${CACHE_DIR}"
-            printf "%.2f\n%.2f\n" "${fallback_price}" "${fallback_prev}" >"${CACHE_FILE}"
-            cached_price="${fallback_price}"
-            cached_prev="${fallback_prev}"
+            printf "%.2f\n%.2f\n" "${fetched_price}" "${fetched_prev}" >"${CACHE_FILE}"
+            cached_price="${fetched_price}"
+            cached_prev="${fetched_prev}"
+        else
+            # If Nasdaq fails, fallback to Twelve Data
+            if get_quote err_msg; then
+                [[ -d "${CACHE_DIR}" ]] || mkdir -p "${CACHE_DIR}"
+                printf "%.2f\n%.2f\n" "${fetched_price}" "${fetched_prev}" >"${CACHE_FILE}"
+                cached_price="${fetched_price}"
+                cached_prev="${fetched_prev}"
+            else
+                echo "Error: ${err_msg}" >&2
+                error_output "${err_msg}"
+                return 0
+            fi
         fi
     fi
 
